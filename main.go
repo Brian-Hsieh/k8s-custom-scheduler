@@ -1,165 +1,177 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"math/rand"
+	"sync"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 )
 
-// this file is for testing pso temporarily
+var (
+	podBuffer   []*corev1.Pod
+	bufferMutex sync.Mutex
+)
 
-type Particle struct {
-	Position    []float64 // node assignments per pod
-	Velocity    []float64
-	BestPos     []float64
-	BestFitness float64
+func setUpClientSetAndDynamicClient() (*kubernetes.Clientset, *dynamic.DynamicClient, error) {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, nil, err
+	}
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	fmt.Println("Connected to k8s API")
+	return clientset, dynamicClient, nil
 }
 
-type Swarm struct {
-	Particles         []Particle
-	GlobalBest        []float64
-	GlobalBestFitness float64
+func isNodeReady(node *corev1.Node) bool {
+	for _, cond := range node.Status.Conditions {
+		if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
-func fitness(pos []float64, latency RegionLatency, load NodeLoad) float64 {
-	var total float64
-
-	// latency fitness
-	latency_weight := 1.0
-	latency_fit := 0.0
-	for _, p := range pos {
-		if p <= 1 {
-			latency_fit += latency.tokyo
-		} else if p <= 3 {
-			latency_fit += latency.sydney
-		} else {
-			latency_fit += latency.singapore
+func isNodeUnderPressure(node *corev1.Node) bool {
+	for _, cond := range node.Status.Conditions {
+		if (cond.Type == corev1.NodeDiskPressure || cond.Type == corev1.NodeMemoryPressure || cond.Type == corev1.NodePIDPressure) && cond.Status == corev1.ConditionTrue {
+			return true
 		}
 	}
-
-	// scale this to [1,6]
-	max_latency := max(latency.tokyo, latency.sydney, latency.singapore) * float64(len(pos))
-	min_latency := min(latency.tokyo, latency.sydney, latency.singapore) * float64(len(pos))
-	latency_fit_scaled := (latency_fit-min_latency)/(max_latency-min_latency)*5 + 1
-
-	total += latency_fit_scaled * latency_weight
-
-	// load fitness
-	load_weight := 1.0
-	load_0 := load.w0
-	load_1 := load.w1
-	load_2 := load.w2
-	load_3 := load.w3
-	load_4 := load.w4
-	load_5 := load.w5
-
-	// assume workload of pod to be 10%
-	for _, p := range pos {
-		if p <= 1 {
-			load_0 += 10
-		} else if p <= 2 {
-			load_1 += 10
-		} else if p <= 3 {
-			load_2 += 10
-		} else if p <= 4 {
-			load_3 += 10
-		} else if p <= 5 {
-			load_4 += 10
-		} else {
-			load_5 += 10
-		}
-	}
-	ideal_load := (load_0 + load_1 + load_2 + load_3 + load_4 + load_5) / 6.0
-	load_bal := max(load_0, load_1, load_2, load_3, load_4, load_5) / ideal_load // range from 1 to 6
-	total += load_bal * load_weight
-	return total
+	return false
 }
 
-func runPSO(latency RegionLatency, load NodeLoad, numPods int, numIterations int, swarmSize int) []float64 {
-	fmt.Println("running PSO...")
-	fmt.Printf("latency values: %v\n", latency)
-	fmt.Printf("load values: %v\n", load)
+func mapFromFloatToNodeName(v float64) string {
+	if v <= 1 {
+		return "tokyo-worker1"
+	} else if v <= 2 {
+		return "masters-slave"
+	} else if v <= 3 {
+		return "masters-slave2"
+	} else if v <= 4 {
+		return "singapore-worker1"
+	} else if v <= 5 {
+		return "singapore-worker2"
+	} else {
+		return "singapore-worker3"
+	}
+}
 
-	// Initialize swarm
-	swarm := Swarm{
-		Particles:         make([]Particle, swarmSize),
-		GlobalBestFitness: 1e9, // intial large value <- we want it small
+func findBestNodesPSO(clientset *kubernetes.Clientset, dynamicClient *dynamic.DynamicClient, pods []*corev1.Pod) []string {
+	regionLatency := getRegionLatencies(dynamicClient)
+	nodeLoad := getNodeLoad(dynamicClient)
+	re := runPSO(regionLatency, nodeLoad, len(pods), 100, 10)
+	fmt.Printf("PSO result (values): %v\n", re)
+	nodeNames := make([]string, len(pods))
+	for i, v := range re {
+		nodeNames[i] = mapFromFloatToNodeName(v)
+	}
+	fmt.Printf("PSO result (node names): %v\n", nodeNames)
+	return nodeNames
+}
+
+func schedulePodToNode(pod *corev1.Pod, nodeName string, clientset *kubernetes.Clientset) error {
+	fmt.Println("scheduling pod to node: " + nodeName)
+
+	binding := &corev1.Binding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pod.Name,
+			Namespace: pod.Namespace,
+		},
+		Target: corev1.ObjectReference{
+			Kind: "Node",
+			Name: nodeName,
+		},
+	}
+	err := clientset.CoreV1().Pods(pod.Namespace).Bind(context.Background(), binding, metav1.CreateOptions{})
+	if err != nil {
+		fmt.Printf("Error when scheduling pods to node: %v\n", err.Error())
+	}
+	return err
+}
+
+func watchForPodsAndSchedule(clientset *kubernetes.Clientset, dynamicClient *dynamic.DynamicClient) {
+	list := cache.NewListWatchFromClient(
+		clientset.CoreV1().RESTClient(),
+		"pods",
+		"app",
+		fields.OneTermEqualSelector("spec.nodeName", ""),
+	)
+
+	options := cache.InformerOptions{
+		ListerWatcher: list,
+		ObjectType:    &corev1.Pod{},
+		Handler: cache.ResourceEventHandlerFuncs{
+			AddFunc: func(obj interface{}) {
+				pod := obj.(*corev1.Pod)
+				if pod.Spec.SchedulerName != "custom-scheduler" {
+					return
+				}
+				bufferMutex.Lock()
+				podBuffer = append(podBuffer, pod)
+				bufferMutex.Unlock()
+			},
+		},
 	}
 
-	// Initialize pos and vel for each Particle
-	for i := 0; i < swarmSize; i++ {
-		pos := make([]float64, numPods)
-		vel := make([]float64, numPods)
-		for j := 0; j < numPods; j++ {
-			pos[j] = rand.Float64() * 6 // 6 VMs
-			vel[j] = (rand.Float64()*2 - 1) * 6
-		}
-		fit := fitness(pos, latency, load)
-		swarm.Particles[i] = Particle{
-			Position:    pos,
-			Velocity:    vel,
-			BestPos:     append([]float64(nil), pos...), // copy of pos
-			BestFitness: fit,
-		}
-		if fit < swarm.GlobalBestFitness {
-			swarm.GlobalBestFitness = fit
-			swarm.GlobalBest = append([]float64(nil), pos...)
-		}
-	}
+	_, controller := cache.NewInformerWithOptions(options)
 
-	// PSO main loop
-	for iter := 0; iter < numIterations; iter++ {
-		for i, p := range swarm.Particles {
-			for j := 0; j < numPods; j++ {
+	stop := make(chan struct{})
+	defer close(stop)
+	go controller.Run(stop)
 
-				omega := 1.0
-				c1 := 0.5
-				c2 := 0.5
-
-				// velocity update
-				p.Velocity[j] = omega*p.Velocity[j] +
-					c1*rand.Float64()*(p.BestPos[j]-p.Position[j]) +
-					c2*rand.Float64()*(swarm.GlobalBest[j]-p.Position[j])
-
-				if p.Velocity[j] > 6 {
-					p.Velocity[j] = 6
-				}
-				if p.Velocity[j] < -6 {
-					p.Velocity[j] = -6
-				}
-
-				// position update
-				p.Position[j] += p.Velocity[j]
-
-				if p.Position[j] > 6 {
-					p.Position[j] = 6
-				}
-				if p.Position[j] < 0 {
-					p.Position[j] = 0
-				}
+	// Periodically process the buffer to run PSO on multiple pods at once
+	go func() {
+		ticker := time.NewTicker(5 * time.Second) // tune this delay
+		for range ticker.C {
+			bufferMutex.Lock()
+			if len(podBuffer) == 0 {
+				bufferMutex.Unlock()
+				continue
 			}
 
-			fit := fitness(p.Position, latency, load)
-			if fit < p.BestFitness {
-				p.BestFitness = fit
-				p.BestPos = append([]float64(nil), p.Position...)
+			fmt.Printf("%s pods ready to be scheduled.\n", len(podBuffer))
+
+			pods := append([]*corev1.Pod(nil), podBuffer...)
+			podBuffer = []*corev1.Pod{}
+			bufferMutex.Unlock()
+
+			// Run PSO to find the best node assignments for these pods
+			nodesAssignment := findBestNodesPSO(clientset, dynamicClient, pods)
+
+			// Schedule each pod based on the PSO result
+			for i, pod := range pods {
+				nodeName := nodesAssignment[i]
+				if err := schedulePodToNode(pod, nodeName, clientset); err != nil {
+					fmt.Printf("Failed to schedule pod %s to node %s: %v\n", pod.Name, nodeName, err)
+				}
 			}
-			if fit < swarm.GlobalBestFitness {
-				swarm.GlobalBestFitness = fit
-				swarm.GlobalBest = append([]float64(nil), p.Position...)
-			}
-			swarm.Particles[i] = p
 		}
-	}
-	return swarm.GlobalBest
+	}()
+
+	select {}
 }
 
 func main() {
-	dynamicClient, err := setUpDynamicClient()
+	clientSet, dynamicClient, err := setUpClientSetAndDynamicClient()
 	if err != nil {
 		panic(err.Error())
 	}
-	regionLatency := getRegionLatencies(dynamicClient)
-	nodeLoad := getNodeLoad(dynamicClient)
-	re := runPSO(regionLatency, nodeLoad, 2, 100, 10)
-	fmt.Printf("result: %v\n", re)
+	watchForPodsAndSchedule(clientSet, dynamicClient)
 }

@@ -9,13 +9,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/rest"
 )
 
 type RegionLatency struct {
-	singapore float64
-	sydney    float64
 	tokyo     float64
+	sydney    float64
+	singapore float64
 }
 
 type NodeLoad struct {
@@ -25,20 +24,6 @@ type NodeLoad struct {
 	w3 float64
 	w4 float64
 	w5 float64
-}
-
-func setUpDynamicClient() (*dynamic.DynamicClient, error) {
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, err
-	}
-
-	dynamicClient, err := dynamic.NewForConfig(config)
-	if err != nil {
-		return nil, err
-	}
-	fmt.Println("Connected to k8s API")
-	return dynamicClient, nil
 }
 
 func getRegionLatencies(dynamicClient *dynamic.DynamicClient) RegionLatency {
