@@ -76,16 +76,18 @@ func getRegionLatencies(dynamicClient *dynamic.DynamicClient) RegionLatency {
 			continue
 		}
 
-		switch region {
-		case "latency-singapore":
-			latencies.singapore = value
-		case "latency-sydney":
-			latencies.sydney = value
-		case "latency-tokyo":
-			latencies.tokyo = value
+		if value != 0.0 {
+			switch region {
+			case "latency-singapore":
+				latencies.singapore = value
+			case "latency-sydney":
+				latencies.sydney = value
+			case "latency-tokyo":
+				latencies.tokyo = value
+			}
 		}
 
-		fmt.Printf("Latency for %s: %.2f\n", region, value)
+		fmt.Printf("Latency found for %s: %.2f\n", region, value)
 	}
 
 	return latencies
@@ -109,7 +111,7 @@ func getNodeLoad(dynamicClient *dynamic.DynamicClient) NodeLoad {
 		Resource: "datadogmetrics",
 	}
 
-	nodes := []string{"tokyo-worker1", "masters-slave", "masters-slave2", "singapore-worker1", "singapore-worker2", "singapore-worker3"}
+	nodes := []string{"load-tokyo-worker1", "load-masters-slave", "load-masters-slave2", "load-singapore-worker1", "load-singapore-worker2", "load-singapore-worker3"}
 
 	for _, node := range nodes {
 		metric, err := dynamicClient.Resource(datadogMetricGVR).Namespace("datadog").Get(context.TODO(), node, metav1.GetOptions{})
@@ -129,23 +131,26 @@ func getNodeLoad(dynamicClient *dynamic.DynamicClient) NodeLoad {
 			fmt.Printf("Error when converting string to float: %v\n", err)
 			continue
 		}
+		value *= 100.0
 
-		switch node {
-		case "tokyo-worker1":
-			loads.w0 = value
-		case "masters-slave":
-			loads.w1 = value
-		case "masters-slave2":
-			loads.w2 = value
-		case "singapore-worker1":
-			loads.w3 = value
-		case "singapore-worker2":
-			loads.w4 = value
-		case "singapore-worker3":
-			loads.w5 = value
+		if value != 0.0 {
+			switch node {
+			case "load-tokyo-worker1":
+				loads.w0 = value
+			case "load-masters-slave":
+				loads.w1 = value
+			case "load-masters-slave2":
+				loads.w2 = value
+			case "load-singapore-worker1":
+				loads.w3 = value
+			case "load-singapore-worker2":
+				loads.w4 = value
+			case "load-singapore-worker3":
+				loads.w5 = value
+			}
 		}
 
-		fmt.Printf("Load for %s: %.2f\n", node, value)
+		fmt.Printf("Load found for %s: %.2f\n", node, value)
 	}
 
 	return loads
