@@ -75,6 +75,10 @@ func fitness(pos []float64, latency RegionLatency, load NodeLoad) float64 {
 }
 
 func runPSO(latency RegionLatency, load NodeLoad, numPods int, numIterations int, swarmSize int) []float64 {
+	fmt.Println("running PSO...")
+	fmt.Printf("latency values: %v\n", latency)
+	fmt.Printf("load values: %v\n", load)
+
 	// Initialize swarm
 	swarm := Swarm{
 		Particles:         make([]Particle, swarmSize),
