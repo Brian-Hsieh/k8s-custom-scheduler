@@ -173,5 +173,11 @@ func main() {
 	if err != nil {
 		panic(err.Error())
 	}
+
+	if err := loadConfig(); err != nil {
+		fmt.Println("Error when loading env var", err)
+	}
+	fmt.Printf("Config: %+v\n", config)
+
 	watchForPodsAndSchedule(clientSet, dynamicClient)
 }

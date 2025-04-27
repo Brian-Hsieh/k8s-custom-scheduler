@@ -22,7 +22,6 @@ func fitness(pos []float64, latency RegionLatency, load NodeLoad) float64 {
 	var total float64
 
 	// latency fitness
-	latency_weight := 1.0
 	latency_fit := 0.0
 	for _, p := range pos {
 		if p <= 1 {
@@ -39,10 +38,9 @@ func fitness(pos []float64, latency RegionLatency, load NodeLoad) float64 {
 	min_latency := min(latency.tokyo, latency.sydney, latency.singapore) * float64(len(pos))
 	latency_fit_scaled := (latency_fit-min_latency)/(max_latency-min_latency)*5 + 1
 
-	total += latency_fit_scaled * latency_weight
+	total += latency_fit_scaled * config.latency_weight
 
 	// load fitness
-	load_weight := 1.0
 	load_0 := load.w0
 	load_1 := load.w1
 	load_2 := load.w2
@@ -68,7 +66,7 @@ func fitness(pos []float64, latency RegionLatency, load NodeLoad) float64 {
 	}
 	ideal_load := (load_0 + load_1 + load_2 + load_3 + load_4 + load_5) / 6.0
 	load_bal := max(load_0, load_1, load_2, load_3, load_4, load_5) / ideal_load // range from 1 to 6
-	total += load_bal * load_weight
+	total += load_bal * config.load_weight
 	return total
 }
 
@@ -109,14 +107,10 @@ func runPSO(latency RegionLatency, load NodeLoad, numPods int, numIterations int
 		for i, p := range swarm.Particles {
 			for j := 0; j < numPods; j++ {
 
-				omega := 1.0
-				c1 := 0.5
-				c2 := 0.5
-
 				// velocity update
-				p.Velocity[j] = omega*p.Velocity[j] +
-					c1*rand.Float64()*(p.BestPos[j]-p.Position[j]) +
-					c2*rand.Float64()*(swarm.GlobalBest[j]-p.Position[j])
+				p.Velocity[j] = config.omega*p.Velocity[j] +
+					config.c1*rand.Float64()*(p.BestPos[j]-p.Position[j]) +
+					config.c2*rand.Float64()*(swarm.GlobalBest[j]-p.Position[j])
 
 				if p.Velocity[j] > 6 {
 					p.Velocity[j] = 6
